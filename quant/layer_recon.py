@@ -199,6 +199,7 @@ class LossFunction:
         self.count = 0
         self.pd_loss = torch.nn.KLDivLoss(reduction='batchmean')
         self.el_lambda = None
+        self.el_eps=1e-6
         
 
     def __call__(self, pred, tgt, output, output_fp):
@@ -224,7 +225,7 @@ class LossFunction:
         pd_loss = self.pd_loss(F.log_softmax(output / self.T, dim=1), F.softmax(output_fp / self.T, dim=1)) / self.lam
         if self.el_lambda is None:
             # Lazy initialization once output_fp is available
-            self.el_lambda = nn.Parameter(torch.zeros_like(output_fp.mean(dim=0)))
+            self.el_lambda = torch.nn.Parameter(torch.zeros_like(output_fp.mean(dim=0)))
         with torch.no_grad():
             target_mean = output_fp.mean(dim=0)  # shape [C]
 
@@ -233,7 +234,7 @@ class LossFunction:
         denom = (1.0 + inner.unsqueeze(1)).clamp(min=self.el_eps)  # [B, 1]
         weighted = g_x / denom  # [B, C]
         constraint = weighted.mean(dim=0)
-        el_logit_loss = (constraint ** 2).sum() * self.el_loss_weight
+        el_logit_loss = (constraint ** 2).sum() #* self.el_loss_weight
 
         b = self.temp_decay(self.count)
         if self.count < self.loss_start or self.round_loss == 'none':
@@ -246,6 +247,6 @@ class LossFunction:
             raise NotImplementedError
         total_loss = rec_loss + round_loss + pd_loss+el_logit_loss
         if self.count % 500 == 0:
-            print('Total loss:\t{:.3f} (rec:{:.3f}, pd:{:.3f}, round:{:.3f})\tb={:.2f}\tcount={}'.format(
-                float(total_loss), float(rec_loss), float(pd_loss), float(round_loss), b, self.count))
+            print('Total loss:\t{:.3f} (rec:{:.3f}, pd:{:.3f}, round:{:.3f}, el_logit_loss:{:.3f})\tb={:.2f}\tcount={}'.format(
+                float(total_loss), float(rec_loss), float(pd_loss), float(round_loss),float(el_logit_loss), b, self.count))
         return total_loss

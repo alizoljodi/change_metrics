@@ -147,7 +147,7 @@ if __name__ == '__main__':
                         choices=['resnet18', 'resnet50', 'mobilenetv2', 'regnetx_600m', 'regnetx_3200m', 'mnasnet'])
     parser.add_argument('--batch_size', default=64, type=int, help='mini-batch size for data loader')
     parser.add_argument('--workers', default=4, type=int, help='number of workers for data loader')
-    parser.add_argument('--data_path', default='/datasets-to-imagenet', type=str, help='path to ImageNet data')
+    parser.add_argument('--data_path', default='/mimer/NOBACKUP/groups/naiss2025-22-91/imagenet', type=str, help='path to ImageNet data')
 
     # quantization parameters
     parser.add_argument('--n_bits_w', default=4, type=int, help='bitwidth for weight quantization')
