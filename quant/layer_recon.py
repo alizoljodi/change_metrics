@@ -90,11 +90,7 @@ def layer_reconstruction(model: QuantModel, fp_model: QuantModel, layer: QuantMo
     '''set up drop'''
     layer.act_quantizer.is_training = True
 
-    if len(w_para) != 0:
-        w_opt = torch.optim.Adam(w_para, lr=3e-3)
-    if len(a_para) != 0:
-        a_opt = torch.optim.Adam(a_para, lr=lr)
-        a_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(a_opt, T_max=iters, eta_min=0.)
+    
     
     loss_mode = 'relaxation'
     rec_loss = opt_mode
@@ -103,6 +99,29 @@ def layer_reconstruction(model: QuantModel, fp_model: QuantModel, layer: QuantMo
                              decay_start=0, warmup=warmup, p=p, lam=lamb_r, T=T)
     device = 'cuda'
     sz = cached_inps.size(0)
+
+    with torch.no_grad():
+        dummy_idx = torch.randint(0, sz, (batch_size,))
+        dummy_input = cached_inps[dummy_idx].to(device)
+        dummy_out = layer(dummy_input)
+        dummy_output = dummy_out
+        for num, module in enumerate(module_list):
+            if name_list[num] == 'fc':
+                dummy_output = torch.flatten(dummy_output, 1)
+            if isinstance(module, torch.nn.Dropout):
+                dummy_output = dummy_output.mean([2, 3])
+            dummy_output = module(dummy_output)
+        dummy_fp = cached_output[dummy_idx].to(device)
+        _ = loss_func(dummy_out, cached_outs[dummy_idx].to(device), dummy_output, dummy_fp)
+
+    if hasattr(loss_func, 'el_lambda') and loss_func.el_lambda is not None:
+        a_para.append(loss_func.el_lambda)
+    if len(w_para) != 0:
+        w_opt = torch.optim.Adam(w_para, lr=3e-3)
+    if len(a_para) != 0:
+        a_opt = torch.optim.Adam(a_para, lr=lr)
+        a_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(a_opt, T_max=iters, eta_min=0.)
+
     for i in range(iters):
         idx = torch.randint(0, sz, (batch_size,))
         cur_inp = cached_inps[idx].to(device)
@@ -143,6 +162,8 @@ def layer_reconstruction(model: QuantModel, fp_model: QuantModel, layer: QuantMo
             scheduler.step()
         if a_scheduler:
             a_scheduler.step()
+        if i % 1000 == 0 and hasattr(loss_func, 'el_lambda'):
+            print("EL λ grad norm:", loss_func.el_lambda.grad.norm().item())
     torch.cuda.empty_cache()
 
     layer.weight_quantizer.soft_targets = False
@@ -177,6 +198,8 @@ class LossFunction:
                                           start_b=b_range[0], end_b=b_range[1])
         self.count = 0
         self.pd_loss = torch.nn.KLDivLoss(reduction='batchmean')
+        self.el_lambda = None
+        
 
     def __call__(self, pred, tgt, output, output_fp):
         """
@@ -191,6 +214,7 @@ class LossFunction:
         :param output_fp: prediction from FP model
         :return: total loss function
         """
+        
         self.count += 1
         if self.rec_loss == 'mse':
             rec_loss = lp_loss(pred, tgt, p=self.p)
@@ -198,6 +222,18 @@ class LossFunction:
             raise ValueError('Not supported reconstruction loss function: {}'.format(self.rec_loss))
 
         pd_loss = self.pd_loss(F.log_softmax(output / self.T, dim=1), F.softmax(output_fp / self.T, dim=1)) / self.lam
+        if self.el_lambda is None:
+            # Lazy initialization once output_fp is available
+            self.el_lambda = nn.Parameter(torch.zeros_like(output_fp.mean(dim=0)))
+        with torch.no_grad():
+            target_mean = output_fp.mean(dim=0)  # shape [C]
+
+        g_x = output - target_mean  # shape [B, C]
+        inner = torch.matmul(g_x, self.el_lambda)  # [B]
+        denom = (1.0 + inner.unsqueeze(1)).clamp(min=self.el_eps)  # [B, 1]
+        weighted = g_x / denom  # [B, C]
+        constraint = weighted.mean(dim=0)
+        el_logit_loss = (constraint ** 2).sum() * self.el_loss_weight
 
         b = self.temp_decay(self.count)
         if self.count < self.loss_start or self.round_loss == 'none':
@@ -208,7 +244,7 @@ class LossFunction:
             round_loss += self.weight * (1 - ((round_vals - .5).abs() * 2).pow(b)).sum()
         else:
             raise NotImplementedError
-        total_loss = pd_loss #rec_loss + round_loss + pd_loss
+        total_loss = rec_loss + round_loss + pd_loss+el_logit_loss
         if self.count % 500 == 0:
             print('Total loss:\t{:.3f} (rec:{:.3f}, pd:{:.3f}, round:{:.3f})\tb={:.2f}\tcount={}'.format(
                 float(total_loss), float(rec_loss), float(pd_loss), float(round_loss), b, self.count))
