@@ -11,7 +11,7 @@ if __name__ == "__main__":
     
     if args.exp_name == "resnet18":
         for i in range(4):
-            os.system(f"python main_imagenet.py --data_path /datasets/imagenet --arch resnet18 --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.02")
+            os.system(f"python main_imagenet.py --data_path /home/alz07xz/imagenet --arch resnet18 --n_bits_w {w_bits[i]} --n_bits_a {a_bits[i]} --weight 0.01 --T 4.0 --lamb_c 0.02")
             time.sleep(0.5)
 
     if args.exp_name == "resnet50":
