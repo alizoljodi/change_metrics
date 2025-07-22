@@ -236,7 +236,7 @@ class LossFunction:
         else:
             raise NotImplementedError
 
-        total_loss = rec_loss + round_loss + pd_loss + 0.1 * el_logit_loss
+        total_loss = rec_loss /(rec_loss+ round_loss + pd_loss + el_logit_loss) + round_loss/(rec_loss+ round_loss + pd_loss + el_logit_loss) + pd_loss/(rec_loss+ round_loss + pd_loss + el_logit_loss) + el_logit_loss/(rec_loss+ round_loss + pd_loss + el_logit_loss)
         if self.count % 500 == 0:
             print('Total loss:\t{:.3f} (rec:{:.3f}, pd:{:.3f}, round:{:.3f}, el_logit_loss:{:.3f})\tb={:.2f}\tcount={}'.format(
                 float(total_loss), float(rec_loss), float(pd_loss), float(round_loss),float(el_logit_loss), b, self.count))
