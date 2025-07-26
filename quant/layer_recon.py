@@ -208,8 +208,8 @@ class LossFunction:
             round_loss += self.weight * (1 - ((round_vals - .5).abs() * 2).pow(b)).sum()
         else:
             raise NotImplementedError
-        total_loss = round_loss #rec_loss + round_loss + pd_loss
+        total_loss = rec_loss + round_loss + pd_loss
         if self.count % 500 == 0:
             print('Total loss:\t{:.3f} (rec:{:.3f}, pd:{:.3f}, round:{:.3f})\tb={:.2f}\tcount={}'.format(
                 float(total_loss), float(rec_loss), float(pd_loss), float(round_loss), b, self.count))
-        return total_loss
+        return total_loss#+abs(output.std()-output_fp.std())+abs(output.mean()-output_fp.mean())

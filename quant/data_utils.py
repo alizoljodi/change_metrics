@@ -129,7 +129,7 @@ class GetLayerInpOut:
         with torch.no_grad():
             self.model.set_quant_state(weight_quant=True, act_quant=True)
             try:
-                _ = self.model(model_input.to(self.device))
+                z = self.model(model_input.to(self.device))
             except StopForwardException:
                 pass
 

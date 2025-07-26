@@ -8,6 +8,9 @@ class QuantModel(nn.Module):
 
     def __init__(self, model: nn.Module, weight_quant_params: dict = {}, act_quant_params: dict = {}, is_fusing=True):
         super().__init__()
+
+        #self.gamma=torch.nn.Parameter(torch.ones(1,dim))
+        #self.beta=torch.nn.Parameter(torch.zeros(1,dim))
         if is_fusing:
             search_fold_and_remove_bn(model)
             self.model = model
@@ -85,7 +88,8 @@ class QuantModel(nn.Module):
                 m.set_quant_state(weight_quant, act_quant)
 
     def forward(self, input):
-        return self.model(input)
+        output=self.model(input)
+        return output
 
     def set_first_last_layer_to_8bit(self):
         w_list, a_list = [], []

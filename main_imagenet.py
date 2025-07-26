@@ -7,6 +7,7 @@ import random
 import time
 import hubconf  # noqa: F401
 import copy
+import pandas as pd
 from quant import (
     block_reconstruction,
     layer_reconstruction,
@@ -87,7 +88,7 @@ def accuracy(output, target, topk=(1,)):
         return res
 
 @torch.no_grad()
-def validate_model(val_loader, model, device=None, print_freq=100):
+def validate_model(val_loader, model,fp_model, device=None, print_freq=100):
     if device is None:
         device = next(model.parameters()).device
     else:
@@ -95,6 +96,10 @@ def validate_model(val_loader, model, device=None, print_freq=100):
     batch_time = AverageMeter('Time', ':6.3f')
     top1 = AverageMeter('Acc@1', ':6.2f')
     top5 = AverageMeter('Acc@5', ':6.2f')
+    top1_fp= AverageMeter('Acc@1_fp', ':6.2f')
+    top5_fp= AverageMeter('Acc@5_fp', ':6.2f')
+    top1_aligned= AverageMeter('Acc@1_aligned', ':6.2f')
+    top5_aligned= AverageMeter('Acc@5_aligned', ':6.2f')
     progress = ProgressMeter(
         len(val_loader),
         [batch_time, top1, top5],
@@ -102,19 +107,43 @@ def validate_model(val_loader, model, device=None, print_freq=100):
 
     # switch to evaluate mode
     model.eval()
+    fp_model.eval()
+    data=[]
 
     end = time.time()
     for i, (images, target) in enumerate(val_loader):
         images = images.to(device)
         target = target.to(device)
 
-        # compute output
         output = model(images)
+        output_fp=fp_model(images)
+        for i in range(len(output.mean(dim=0))):
+            data.append([output.mean(dim=0)[i].item(),output.std(0)[i].item(),2,2,output_fp.mean(dim=0)[i].item(),output_fp.std(0)[i].item()])
+
+        
+
+        mean_x=output.mean(dim=0)
+        mean_y=output_fp.mean(dim=0)
+        std_x=output.std(0)
+        std_y=output_fp.std(0)
+        gamma=std_y/(std_x+1e-6)
+        beta=mean_y-gamma*mean_x
+        output_aligned=gamma*output+beta
 
         # measure accuracy and record loss
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
         top1.update(acc1[0], images.size(0))
         top5.update(acc5[0], images.size(0))
+
+        # measure accuracy and record loss
+        acc1_fp, acc5_fp = accuracy(output_fp, target, topk=(1, 5))
+        top1_fp.update(acc1_fp[0], images.size(0))
+        top5_fp.update(acc5_fp[0], images.size(0))
+
+        # measure accuracy and record loss
+        acc1_aligned, acc5_aligned = accuracy(output_aligned, target, topk=(1, 5))
+        top1_aligned.update(acc1_aligned[0], images.size(0))
+        top5_aligned.update(acc5_aligned[0], images.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -122,10 +151,15 @@ def validate_model(val_loader, model, device=None, print_freq=100):
 
         if i % print_freq == 0:
             progress.display(i)
+    columns=["q_mean","q_std","a_bit","w_bit","f_mean","f_std"]
+
+    df=pd.DataFrame(data=data,columns=columns)
+    df.to_csv("dataset1.csv",index=False)
 
     print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'.format(top1=top1, top5=top5))
-
-    return top1.avg
+    print(' * Acc@1_fp {top1.avg:.3f} Acc@5_fp {top5.avg:.3f}'.format(top1=top1_fp, top5=top5_fp))
+    print(' * Acc@1_aligned {top1.avg:.3f} Acc@5_aligned {top5.avg:.3f}'.format(top1=top1_aligned, top5=top5_aligned))
+    return top1.avg, top1_fp.avg#, top1_aligned.avg
 
 def get_train_samples(train_loader, num_samples):
     train_data, target = [], []
@@ -147,12 +181,12 @@ if __name__ == '__main__':
                         choices=['resnet18', 'resnet50', 'mobilenetv2', 'regnetx_600m', 'regnetx_3200m', 'mnasnet'])
     parser.add_argument('--batch_size', default=64, type=int, help='mini-batch size for data loader')
     parser.add_argument('--workers', default=4, type=int, help='number of workers for data loader')
-    parser.add_argument('--data_path', default='/datasets-to-imagenet', type=str, help='path to ImageNet data')
+    parser.add_argument('--data_path', default='/mimer/NOBACKUP/groups/naiss2025-22-91/imagenet', type=str, help='path to ImageNet data')
 
     # quantization parameters
-    parser.add_argument('--n_bits_w', default=4, type=int, help='bitwidth for weight quantization')
+    parser.add_argument('--n_bits_w', default=2, type=int, help='bitwidth for weight quantization')
     parser.add_argument('--channel_wise', default=True, help='apply channel_wise quantization for weights')
-    parser.add_argument('--n_bits_a', default=4, type=int, help='bitwidth for activation quantization')
+    parser.add_argument('--n_bits_a', default=2, type=int, help='bitwidth for activation quantization')
     parser.add_argument('--disable_8bit_head_stem', action='store_true')
 
     # weight calibration parameters
@@ -248,6 +282,9 @@ if __name__ == '__main__':
     # Start calibration
     recon_model(qnn, fp_model)
 
+
     qnn.set_quant_state(weight_quant=True, act_quant=True)
-    print('Full quantization (W{}A{}) accuracy: {}'.format(args.n_bits_w, args.n_bits_a,
-                                                           validate_model(test_loader, qnn)))
+    #qnn.load_state_dict(torch.load("/mimer/NOBACKUP/groups/naiss2025-22-91/ali/change_metrics/qnn.pth"))
+
+    print('Full quantization (W{}A{}) accuracy: {} accuracy_fp: {}'.format(args.n_bits_w, args.n_bits_a,
+                                                           validate_model(test_loader, qnn,fp_model=fp_model)))
