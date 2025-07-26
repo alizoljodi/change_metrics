@@ -67,8 +67,10 @@ def layer_reconstruction(model: QuantModel, fp_model: QuantModel, layer: QuantMo
     module_list, name_list, include = [], [], False
     module_list, name_list = find_unquantized_module(model, module_list, name_list)
     layer.set_quant_state(cur_weight, cur_act)
-    for para in model.parameters():
-        para.requires_grad = False
+    for name,para in model.named_parameters():
+        if name not in ["gamma","beta"]:
+
+            para.requires_grad = False
 
     '''set quantizer'''
     round_mode = 'learned_hard_sigmoid'
@@ -89,6 +91,9 @@ def layer_reconstruction(model: QuantModel, fp_model: QuantModel, layer: QuantMo
         a_para += [layer.act_quantizer.delta]
     '''set up drop'''
     layer.act_quantizer.is_training = True
+
+    for name, param in model.named_parameters():
+        print(f"{name}: requires_grad={param.requires_grad}")
 
     if len(w_para) != 0:
         w_opt = torch.optim.Adam(w_para, lr=3e-3)

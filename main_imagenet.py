@@ -117,8 +117,8 @@ def validate_model(val_loader, model,fp_model, device=None, print_freq=100):
 
         output = model(images)
         output_fp=fp_model(images)
-        for i in range(len(output.mean(dim=0))):
-            data.append([output.mean(dim=0)[i].item(),output.std(0)[i].item(),2,2,output_fp.mean(dim=0)[i].item(),output_fp.std(0)[i].item()])
+        '''for i in range(len(output.mean(dim=0))):
+            data.append([output.mean(dim=0)[i].item(),output.std(0)[i].item(),2,2,output_fp.mean(dim=0)[i].item(),output_fp.std(0)[i].item()])'''
 
         
 
@@ -151,10 +151,10 @@ def validate_model(val_loader, model,fp_model, device=None, print_freq=100):
 
         if i % print_freq == 0:
             progress.display(i)
-    columns=["q_mean","q_std","a_bit","w_bit","f_mean","f_std"]
+    '''columns=["q_mean","q_std","a_bit","w_bit","f_mean","f_std"]
 
     df=pd.DataFrame(data=data,columns=columns)
-    df.to_csv("dataset1.csv",index=False)
+    df.to_csv("dataset1.csv",index=False)'''
 
     print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'.format(top1=top1, top5=top5))
     print(' * Acc@1_fp {top1.avg:.3f} Acc@5_fp {top5.avg:.3f}'.format(top1=top1_fp, top5=top5_fp))
