@@ -18,6 +18,9 @@ class QuantModel(nn.Module):
         else:
             self.model = model
             self.quant_module_refactor_wo_fuse(self.model, weight_quant_params, act_quant_params)
+        # Add IRM (Information Rectification Module)
+        self.gamma = nn.Parameter(torch.ones(1000))
+        self.beta = nn.Parameter(torch.zeros(1000))
 
     def quant_module_refactor(self, module: nn.Module, weight_quant_params: dict = {}, act_quant_params: dict = {}):
         """
@@ -89,6 +92,7 @@ class QuantModel(nn.Module):
 
     def forward(self, input):
         output=self.model(input)
+        output = self.gamma * output + self.beta
         return output
 
     def set_first_last_layer_to_8bit(self):
