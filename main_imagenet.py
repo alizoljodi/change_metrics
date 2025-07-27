@@ -280,7 +280,7 @@ if __name__ == '__main__':
             else:
                 recon_model(module, fp_module)
     # Start calibration
-    #recon_model(qnn, fp_model)
+    recon_model(qnn, fp_model)
 
 
     qnn.set_quant_state(weight_quant=True, act_quant=True)

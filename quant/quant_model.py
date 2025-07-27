@@ -2,7 +2,7 @@ import torch.nn as nn
 from .quant_block import specials, BaseQuantBlock
 from .quant_layer import QuantModule, StraightThrough, UniformAffineQuantizer
 from .fold_bn import search_fold_and_remove_bn
-
+import torch
 
 class QuantModel(nn.Module):
 

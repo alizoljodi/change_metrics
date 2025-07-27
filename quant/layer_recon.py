@@ -99,7 +99,10 @@ def layer_reconstruction(model: QuantModel, fp_model: QuantModel, layer: QuantMo
         w_opt = torch.optim.Adam(w_para, lr=3e-3)
     if len(a_para) != 0:
         a_opt = torch.optim.Adam(a_para, lr=lr)
+        b_g_opt=torch.optim.Adam([model.gamma,model.beta],lr=lr)
         a_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(a_opt, T_max=iters, eta_min=0.)
+        b_g_scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(b_g_opt, T_max=iters,eta_min=0)
+    
     
     loss_mode = 'relaxation'
     rec_loss = opt_mode
@@ -123,6 +126,7 @@ def layer_reconstruction(model: QuantModel, fp_model: QuantModel, layer: QuantMo
             w_opt.zero_grad()
         if a_opt:
             a_opt.zero_grad()
+            b_g_opt.zero_grad()
         out_all = layer(cur_inp)
         
         '''forward for prediction difference'''
@@ -133,21 +137,28 @@ def layer_reconstruction(model: QuantModel, fp_model: QuantModel, layer: QuantMo
             # for ResNet and RegNet
             if name_list[num] == 'fc':
                 output = torch.flatten(output, 1)
+                
             # for MobileNet and MNasNet
             if isinstance(module, torch.nn.Dropout):
                 output = output.mean([2, 3])
             output = module(output)
+        err1 = loss_func(out_drop, cur_out, output, output_fp)
+        #print("err1",err1)
+        output=model.gamma * output + model.beta
         err = loss_func(out_drop, cur_out, output, output_fp)
+        #print("err",err)
 
         err.backward(retain_graph=True)
         if w_opt:
             w_opt.step()
         if a_opt:
             a_opt.step()
+            b_g_opt.step()
         if scheduler:
             scheduler.step()
         if a_scheduler:
             a_scheduler.step()
+            b_g_scheduler.step()
     torch.cuda.empty_cache()
 
     layer.weight_quantizer.soft_targets = False
