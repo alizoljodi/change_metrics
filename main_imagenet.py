@@ -7,6 +7,10 @@ import random
 import time
 import hubconf  # noqa: F401
 import copy
+import matplotlib.pyplot as plt
+from math import sqrt
+import collections
+
 import pandas as pd
 from quant import (
     block_reconstruction,
@@ -88,7 +92,7 @@ def accuracy(output, target, topk=(1,)):
         return res
 
 @torch.no_grad()
-def validate_model(val_loader, model,fp_model, device=None, print_freq=100):
+def validate_model(val_loader, model,fp_model, device=None, print_freq=100,gamma=None,beta=None):
     if device is None:
         device = next(model.parameters()).device
     else:
@@ -122,13 +126,15 @@ def validate_model(val_loader, model,fp_model, device=None, print_freq=100):
 
         
 
-        mean_x=output.mean(dim=0)
-        mean_y=output_fp.mean(dim=0)
-        std_x=output.std(0)
-        std_y=output_fp.std(0)
-        gamma=std_y/(std_x+1e-6)
-        beta=mean_y-gamma*mean_x
-        output_aligned=gamma*output+beta
+        mean_x=output.mean()
+        #mean_y=output_fp.mean(dim=0)
+        std_x=output.std() + 1e-6
+        #norm_output = (output - mean_x) / std_x
+        #std_y=output_fp.std(0)
+        #gamma=std_y/(std_x+1e-6)
+        #beta=mean_y-gamma*mean_x
+        output_aligned=gamma * output + beta #(output-mean_x+beta)/(gamma*torch.sqrt(std_x))
+        #
 
         # measure accuracy and record loss
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
@@ -279,12 +285,150 @@ if __name__ == '__main__':
                 set_weight_act_quantize_params(module, fp_module)
             else:
                 recon_model(module, fp_module)
+            # %%
     # Start calibration
-    recon_model(qnn, fp_model)
+    #recon_model(qnn, fp_model)
 
 
-    qnn.set_quant_state(weight_quant=True, act_quant=True)
-    #qnn.load_state_dict(torch.load("/mimer/NOBACKUP/groups/naiss2025-22-91/ali/change_metrics/qnn.pth"))
+    
+    #torch.save(qnn.state_dict(), "model_full_state1.pth")
+    #import sys
+    #sys.exit(0)
+weights=torch.load("/mimer/NOBACKUP/groups/naiss2025-22-91/ali/change_metrics/model_full_state.pth")
 
-    print('Full quantization (W{}A{}) accuracy: {} accuracy_fp: {}'.format(args.n_bits_w, args.n_bits_a,
-                                                           validate_model(test_loader, qnn,fp_model=fp_model)))
+qnn.set_quant_state(weight_quant=True, act_quant=True)
+
+# Load the saved state_dict
+checkpoint_state_dict = torch.load("/mimer/NOBACKUP/groups/naiss2025-22-91/ali/change_metrics/model_full_state.pth")
+print(f"Checkpoint loaded. Keys available: {len(checkpoint_state_dict.keys())}")
+
+model_state_dict=qnn.state_dict()
+print(f"Model has {len(model_state_dict.keys())} parameters.")
+
+new_state_dict = collections.OrderedDict()
+
+loaded_count = 0
+skipped_checkpoint_keys = []
+skipped_model_keys = []
+
+for k, v in checkpoint_state_dict.items():
+    if k in model_state_dict:
+        # Check if the tensor shapes match. If not, skip and warn.
+        if v.shape == model_state_dict[k].shape:
+            new_state_dict[k] = v
+            loaded_count += 1
+        else:
+            skipped_checkpoint_keys.append(f"{k} (shape mismatch: checkpoint {v.shape} vs model {model_state_dict[k].shape})")
+    else:
+        skipped_checkpoint_keys.append(k)
+
+for k in model_state_dict.keys():
+    if k not in new_state_dict:
+        skipped_model_keys.append(k)
+
+# Load the filtered state_dict into the model.
+# Using strict=False allows for missing keys in the loaded state_dict
+# (i.e., parameters in the model that are not in new_state_dict will be left as is).
+qnn.load_state_dict(new_state_dict, strict=False)
+
+print(f"\n--- Loading Summary ---")
+print(f"Successfully loaded {loaded_count} parameters.")
+
+if skipped_checkpoint_keys:
+    print(f"Skipped {len(skipped_checkpoint_keys)} keys from checkpoint (no counterpart or shape mismatch in model):")
+    for key in skipped_checkpoint_keys:
+        print(f"  - {key}")
+else:
+    print("All checkpoint keys found and loaded (or shapes matched).")
+
+if skipped_model_keys:
+    print(f"Skipped {len(skipped_model_keys)} keys in model (no counterpart in checkpoint):")
+    for key in skipped_model_keys:
+        print(f"  - {key}")
+else:
+    print("All model keys had a counterpart in the checkpoint.")
+
+print("--- Loading Complete ---")
+
+
+# Loop through each key in state_dict
+'''for key, value in state_dict.items():
+    try:
+        # Navigate the attribute tree dynamically (e.g., 'model.layer1.0.conv1.weight_quantizer.alpha')
+        parts = key.split(".")
+        obj = qnn  # start from the root model
+
+        for p in parts[:-1]:  # go to the second last part
+            if p.isdigit():
+                obj = obj[int(p)]  # for sequential layers
+            else:
+                obj = getattr(obj, p)
+
+        # Finally, set the value
+        setattr(obj, parts[-1], torch.nn.Parameter(value) if isinstance(value, torch.Tensor) else value)
+        print(f"✅ Loaded {key}")
+    except Exception as e:
+        print(f"❌ Failed to load {key}: {e}")
+
+
+    #print('Full quantization (W{}A{}) accuracy: {} accuracy_fp: {}'.format(args.n_bits_w, args.n_bits_a,
+    #                                                       validate_model(test_loader, qnn,fp_model=fp_model)))
+'''
+print("\n=== Fine-tuning final affine layer (gamma, beta) ===")
+from torch.optim import Adam
+
+# Forward once to get output shapes
+with torch.no_grad():
+    sample_output = qnn(cali_data.to(device))
+C = sample_output.shape[1]  # num channels (assuming [B, C] or [B, C, H, W])
+gamma = nn.Parameter(torch.ones(1, C).to(device))
+beta = nn.Parameter(torch.zeros(1, C).to(device))
+lr=1e-2
+# Optimizer
+optimizer = Adam([gamma, beta], lr=lr)
+loss_fn = nn.MSELoss()  # Or KLDivLoss with softmax if more suitable
+loss_ce=nn.CrossEntropyLoss()
+qnn.eval()
+loss_list=[]
+fp_model.eval()
+for epoch in range(400):  # You can tune this
+    optimizer.zero_grad()
+
+    with torch.no_grad():
+        q_output = qnn(cali_data.to(device))  # quantized output
+        #target=cali_target.to(device)
+        #mean = q_output.mean(0)
+        #std = q_output.std(0) + 1e-6
+        #norm_output = (q_output - mean) / std
+        fp_output = fp_model(cali_data.to(device))     # full-precision output
+
+# Assume shape [B, C]; reshape gamma and beta if needed
+    mean_x=q_output.mean()
+    #mean_y=output_fp.mean(dim=0)
+    std_x=q_output.std() + 1e-6
+    #output_aligned=(q_output-mean_x+beta)/(gamma*torch.sqrt(std_x))
+
+    output_aligned = gamma * q_output + beta
+    loss = loss_fn(output_aligned, fp_output)#+loss_ce(output_aligned,target)
+
+    loss.backward()
+    loss_list.append(loss.item())
+    optimizer.step()
+
+    if epoch % 20 == 0 or epoch == 199:
+        print(f"[Epoch {epoch}] Loss: {loss.item():.6f}")
+
+print("=> Finished affine fine-tuning")
+
+plt.figure(figsize=(8, 5))
+plt.plot(loss_list)
+plt.title("Loss Curve (Post-Training Optimization)")
+plt.xlabel("Iteration")
+plt.ylabel("Loss")
+plt.grid(True)
+plt.tight_layout()
+
+# Save the plot with a descriptive name
+plt.savefig("loss_plateau_gamma_beta_optimization_{lr}_new_method.png".format(lr=lr), dpi=300)
+print('Full quantization (W{}A{}) accuracy: {}'.format(args.n_bits_w, args.n_bits_a,
+                                                        validate_model(test_loader, qnn,fp_model=fp_model,gamma=gamma,beta=beta)))

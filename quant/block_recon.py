@@ -68,9 +68,9 @@ def block_reconstruction(model: QuantModel, fp_model: QuantModel, block: BaseQua
     module_list, name_list = find_unquantized_module(model, module_list, name_list)
     block.set_quant_state(cur_weight, cur_act)
     for name,para in model.named_parameters():
-        if name not in ["gamma","beta"]:
+        #if name not in ["gamma","beta"]:
 
-            para.requires_grad = False
+        para.requires_grad = False
 
     '''set quantizer'''
     round_mode = 'learned_hard_sigmoid'
@@ -98,10 +98,10 @@ def block_reconstruction(model: QuantModel, fp_model: QuantModel, block: BaseQua
         w_opt = torch.optim.Adam(w_para, lr=3e-3)
     if len(a_para) != 0:
         a_opt = torch.optim.Adam(a_para, lr=lr)
-        b_g_opt=torch.optim.Adam([model.gamma,model.beta],lr=lr)
+        #b_g_opt=torch.optim.Adam([model.gamma,model.beta],lr=lr)
 
         a_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(a_opt, T_max=iters, eta_min=0.)
-        b_g_scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(b_g_opt, T_max=iters,eta_min=0)
+        #b_g_scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(b_g_opt, T_max=iters,eta_min=0)
 
 
     loss_mode = 'relaxation'
@@ -140,7 +140,7 @@ def block_reconstruction(model: QuantModel, fp_model: QuantModel, block: BaseQua
             if isinstance(module, torch.nn.Dropout):
                 output = output.mean([2, 3])
             output = module(output)
-        output=model.gamma * output + model.beta
+        #output=model.gamma * output + model.beta
         err = loss_func(out_drop, cur_out, output, output_fp)
 
         err.backward(retain_graph=True)
