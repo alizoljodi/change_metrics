@@ -1,12 +1,18 @@
-#!/bin/bash
-#SBATCH -J TestJob               
-#SBATCH -c 8                    
-#SBATCH --mem=128G
-#SBATCH -p h100                  
-#SBATCH --gres=gpu:1             
-#SBATCH --tmp=5G                 
-#SBATCH --mail-type=ALL          
-#SBATCH --mail-user=<your-email-address>
+#!/usr/bin/env bash
 
-source /home/alz07xz/project/PD-Quant/pd_quant/bin/activate
-python run_script.py resnet18
+#SBATCH -A NAISS2024-22-1122 -p alvis
+
+#SBATCH -N 1 --gpus-per-node=A100:1
+
+#SBATCH -t 3-00:00:00
+
+#SBATCH -J "MNMG PyTorch"
+
+module purge
+module load virtualenv/20.23.1-GCCcore-12.3.0
+source myvenv/bin/activate
+module load PyTorch-bundle/2.1.2-foss-2023a-CUDA-12.1.1
+
+module load matplotlib/3.7.2-gfbf-2023a
+
+python main_imagenet.py

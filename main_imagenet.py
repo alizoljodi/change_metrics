@@ -7,6 +7,10 @@ import random
 import time
 import hubconf  # noqa: F401
 import copy
+import matplotlib.pyplot as plt
+from math import sqrt
+import collections
+
 import pandas as pd
 from quant import (
     block_reconstruction,
@@ -88,7 +92,7 @@ def accuracy(output, target, topk=(1,)):
         return res
 
 @torch.no_grad()
-def validate_model(val_loader, model,fp_model, device=None, print_freq=100):
+def validate_model(val_loader, model,fp_model, device=None, print_freq=100,gamma=None,beta=None):
     if device is None:
         device = next(model.parameters()).device
     else:
@@ -122,13 +126,15 @@ def validate_model(val_loader, model,fp_model, device=None, print_freq=100):
 
         
 
-        mean_x=output.mean(dim=0)
-        mean_y=output_fp.mean(dim=0)
-        std_x=output.std(0)
-        std_y=output_fp.std(0)
-        gamma=std_y/(std_x+1e-6)
-        beta=mean_y-gamma*mean_x
-        output_aligned=gamma*output+beta
+        mean_x=output.mean()
+        #mean_y=output_fp.mean(dim=0)
+        std_x=output.std() + 1e-6
+        #norm_output = (output - mean_x) / std_x
+        #std_y=output_fp.std(0)
+        #gamma=std_y/(std_x+1e-6)
+        #beta=mean_y-gamma*mean_x
+        output_aligned=gamma * output + beta #(output-mean_x+beta)/(gamma*torch.sqrt(std_x))
+        #
 
         # measure accuracy and record loss
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
@@ -279,12 +285,348 @@ if __name__ == '__main__':
                 set_weight_act_quantize_params(module, fp_module)
             else:
                 recon_model(module, fp_module)
+            # %%
     # Start calibration
-    recon_model(qnn, fp_model)
+    #recon_model(qnn, fp_model)
 
 
-    qnn.set_quant_state(weight_quant=True, act_quant=True)
-    #qnn.load_state_dict(torch.load("/mimer/NOBACKUP/groups/naiss2025-22-91/ali/change_metrics/qnn.pth"))
+    
+    #torch.save(qnn.state_dict(), "model_full_state1.pth")
+    #import sys
+    #sys.exit(0)
+weights=torch.load("/mimer/NOBACKUP/groups/naiss2025-22-91/ali/change_metrics/model_full_state.pth")
 
-    print('Full quantization (W{}A{}) accuracy: {} accuracy_fp: {}'.format(args.n_bits_w, args.n_bits_a,
-                                                           validate_model(test_loader, qnn,fp_model=fp_model)))
+qnn.set_quant_state(weight_quant=True, act_quant=True)
+
+# Load the saved state_dict
+checkpoint_state_dict = torch.load("/mimer/NOBACKUP/groups/naiss2025-22-91/ali/change_metrics/model_full_state.pth")
+
+def map_checkpoint_to_qnn(checkpoint_dict, qnn_model):
+    """
+    Map checkpoint keys to qnn model structure and set delta and alpha values.
+    Checkpoint keys: model.layer1.0.conv1.weight_quantizer.alpha
+    Qnn structure: qnn.model.layer1[0].conv1.weight_quantizer.delta
+    """
+    print("Mapping checkpoint keys to qnn model structure...")
+    
+    # Create a mapping from checkpoint keys to qnn model paths
+    key_mapping = {}
+    
+    # First, let's understand the qnn model structure
+    qnn_state_dict = qnn_model.state_dict()
+    print(f"Qnn model has {len(qnn_state_dict)} parameters")
+    
+    # Create a mapping from checkpoint keys to qnn keys
+    for checkpoint_key in checkpoint_dict.keys():
+        if 'weight_quantizer.alpha' in checkpoint_key or 'weight_quantizer.delta' in checkpoint_key or 'act_quantizer.delta' in checkpoint_key:
+            # Convert checkpoint key format to qnn key format
+            # checkpoint: model.layer1.0.conv1.weight_quantizer.alpha
+            # qnn: model.layer1.0.conv1.weight_quantizer.delta
+            
+            # Extract the base path (everything before the quantizer part)
+            if 'weight_quantizer.alpha' in checkpoint_key:
+                base_path = checkpoint_key.replace('.weight_quantizer.alpha', '')
+                param_name = 'alpha'
+            elif 'weight_quantizer.delta' in checkpoint_key:
+                base_path = checkpoint_key.replace('.weight_quantizer.delta', '')
+                param_name = 'delta'
+            elif 'act_quantizer.delta' in checkpoint_key:
+                base_path = checkpoint_key.replace('.act_quantizer.delta', '')
+                param_name = 'delta'
+            else:
+                continue
+            
+            # Find corresponding qnn key
+            qnn_key = None
+            for qnn_k in qnn_state_dict.keys():
+                if base_path in qnn_k and 'quantizer' in qnn_k:
+                    if 'weight_quantizer' in checkpoint_key and 'weight_quantizer' in qnn_k:
+                        if param_name == 'alpha':
+                            # For alpha, we need to find the AdaRoundQuantizer alpha parameter
+                            if 'alpha' in qnn_k:
+                                qnn_key = qnn_k
+                                break
+                        elif param_name == 'delta':
+                            if 'delta' in qnn_k:
+                                qnn_key = qnn_k
+                                break
+                    elif 'act_quantizer' in checkpoint_key and 'act_quantizer' in qnn_k:
+                        if 'delta' in qnn_k:
+                            qnn_key = qnn_k
+                            break
+            
+            if qnn_key:
+                key_mapping[checkpoint_key] = qnn_key
+                print(f"Mapping: {checkpoint_key} -> {qnn_key}")
+            else:
+                print(f"No mapping found for: {checkpoint_key}")
+    
+    # Now set the values in qnn model
+    updated_count = 0
+    for checkpoint_key, qnn_key in key_mapping.items():
+        if checkpoint_key in checkpoint_dict and qnn_key in qnn_state_dict:
+            try:
+                # Get the value from checkpoint
+                checkpoint_value = checkpoint_dict[checkpoint_key]
+                
+                # Set the value in qnn model
+                with torch.no_grad():
+                    # Navigate to the specific module and set the parameter
+                    module_path = qnn_key.split('.')
+                    current_module = qnn_model
+                    
+                    # Navigate through the module hierarchy
+                    for i, path_part in enumerate(module_path[:-1]):
+                        if path_part.isdigit():
+                            # Handle list indexing like layer1[0]
+                            current_module = current_module[int(path_part)]
+                        else:
+                            current_module = getattr(current_module, path_part)
+                    
+                    # Set the parameter value
+                    param_name = module_path[-1]
+                    if hasattr(current_module, param_name):
+                        param = getattr(current_module, param_name)
+                        if isinstance(param, torch.nn.Parameter):
+                            param.data = checkpoint_value.to(param.device)
+                        else:
+                            setattr(current_module, param_name, checkpoint_value)
+                        updated_count += 1
+                        print(f"Updated {qnn_key} with value from {checkpoint_key}")
+                    else:
+                        print(f"Parameter {param_name} not found in module {qnn_key}")
+                        
+            except Exception as e:
+                print(f"Error updating {qnn_key}: {e}")
+    
+    print(f"Successfully updated {updated_count} parameters")
+    return updated_count
+
+# Map and set the checkpoint values
+updated_params = map_checkpoint_to_qnn(checkpoint_state_dict, qnn)
+print(f"Updated {updated_params} quantizer parameters from checkpoint")
+
+# Alternative direct method for setting quantizer parameters
+def set_quantizer_params_directly(checkpoint_dict, qnn_model):
+    """
+    Directly iterate through qnn model modules and set quantizer parameters.
+    This is more reliable than key mapping.
+    """
+    print("Setting quantizer parameters directly...")
+    updated_count = 0
+    
+    for name, module in qnn_model.named_modules():
+        # Handle weight quantizers
+        if hasattr(module, 'weight_quantizer'):
+            wq = module.weight_quantizer
+            checkpoint_key_alpha = name + '.weight_quantizer.alpha'
+            checkpoint_key_delta = name + '.weight_quantizer.delta'
+            
+            # Set alpha if it exists in checkpoint
+            if checkpoint_key_alpha in checkpoint_dict:
+                if hasattr(wq, 'alpha'):
+                    with torch.no_grad():
+                        wq.alpha.data = checkpoint_dict[checkpoint_key_alpha].to(wq.alpha.device)
+                        updated_count += 1
+                        print(f"Updated {checkpoint_key_alpha}")
+            
+            # Set delta if it exists in checkpoint
+            if checkpoint_key_delta in checkpoint_dict:
+                if hasattr(wq, 'delta'):
+                    with torch.no_grad():
+                        wq.delta = checkpoint_dict[checkpoint_key_delta].to(wq.delta.device)
+                        updated_count += 1
+                        print(f"Updated {checkpoint_key_delta}")
+        
+        # Handle activation quantizers
+        if hasattr(module, 'act_quantizer'):
+            aq = module.act_quantizer
+            checkpoint_key_delta = name + '.act_quantizer.delta'
+            
+            # Set delta if it exists in checkpoint
+            if checkpoint_key_delta in checkpoint_dict:
+                if hasattr(aq, 'delta'):
+                    with torch.no_grad():
+                        aq.delta = checkpoint_dict[checkpoint_key_delta].to(aq.delta.device)
+                        updated_count += 1
+                        print(f"Updated {checkpoint_key_delta}")
+    
+    print(f"Directly updated {updated_count} quantizer parameters")
+    return updated_count
+
+# Also try the direct method
+direct_updated = set_quantizer_params_directly(checkpoint_state_dict, qnn)
+print(f"Direct method updated {direct_updated} parameters")
+
+def verify_quantizer_params(checkpoint_dict, qnn_model):
+    """
+    Verify that quantizer parameters were set correctly by checking a few samples.
+    """
+    print("Verifying quantizer parameters...")
+    verification_count = 0
+    
+    for name, module in qnn_model.named_modules():
+        if hasattr(module, 'weight_quantizer') or hasattr(module, 'act_quantizer'):
+            # Check weight quantizer
+            if hasattr(module, 'weight_quantizer'):
+                wq = module.weight_quantizer
+                checkpoint_key_alpha = name + '.weight_quantizer.alpha'
+                checkpoint_key_delta = name + '.weight_quantizer.delta'
+                
+                if checkpoint_key_alpha in checkpoint_dict and hasattr(wq, 'alpha'):
+                    checkpoint_alpha = checkpoint_dict[checkpoint_key_alpha]
+                    current_alpha = wq.alpha.data
+                    if torch.allclose(checkpoint_alpha.to(current_alpha.device), current_alpha, atol=1e-6):
+                        verification_count += 1
+                        print(f"✓ {checkpoint_key_alpha} verified")
+                    else:
+                        print(f"✗ {checkpoint_key_alpha} mismatch")
+                
+                if checkpoint_key_delta in checkpoint_dict and hasattr(wq, 'delta'):
+                    checkpoint_delta = checkpoint_dict[checkpoint_key_delta]
+                    current_delta = wq.delta
+                    if torch.allclose(checkpoint_delta.to(current_delta.device), current_delta, atol=1e-6):
+                        verification_count += 1
+                        print(f"✓ {checkpoint_key_delta} verified")
+                    else:
+                        print(f"✗ {checkpoint_key_delta} mismatch")
+            
+            # Check activation quantizer
+            if hasattr(module, 'act_quantizer'):
+                aq = module.act_quantizer
+                checkpoint_key_delta = name + '.act_quantizer.delta'
+                
+                if checkpoint_key_delta in checkpoint_dict and hasattr(aq, 'delta'):
+                    checkpoint_delta = checkpoint_dict[checkpoint_key_delta]
+                    current_delta = aq.delta
+                    if torch.allclose(checkpoint_delta.to(current_delta.device), current_delta, atol=1e-6):
+                        verification_count += 1
+                        print(f"✓ {checkpoint_key_delta} verified")
+                    else:
+                        print(f"✗ {checkpoint_key_delta} mismatch")
+    
+    print(f"Verified {verification_count} quantizer parameters")
+    return verification_count
+
+# Verify the parameters
+verified_count = verify_quantizer_params(checkpoint_state_dict, qnn)
+print(f"Verified {verified_count} quantizer parameters")
+
+def summarize_quantizer_params(checkpoint_dict, qnn_model):
+    """
+    Summarize what quantizer parameters were found and what was set.
+    """
+    print("\n=== Quantizer Parameters Summary ===")
+    
+    # Count checkpoint parameters
+    checkpoint_alpha_count = sum(1 for k in checkpoint_dict.keys() if 'weight_quantizer.alpha' in k)
+    checkpoint_delta_count = sum(1 for k in checkpoint_dict.keys() if 'weight_quantizer.delta' in k)
+    checkpoint_act_delta_count = sum(1 for k in checkpoint_dict.keys() if 'act_quantizer.delta' in k)
+    
+    print(f"Checkpoint contains:")
+    print(f"  - Weight quantizer alpha parameters: {checkpoint_alpha_count}")
+    print(f"  - Weight quantizer delta parameters: {checkpoint_delta_count}")
+    print(f"  - Activation quantizer delta parameters: {checkpoint_act_delta_count}")
+    
+    # Count qnn model quantizers
+    qnn_weight_quantizers = 0
+    qnn_act_quantizers = 0
+    qnn_alpha_params = 0
+    qnn_delta_params = 0
+    
+    for name, module in qnn_model.named_modules():
+        if hasattr(module, 'weight_quantizer'):
+            qnn_weight_quantizers += 1
+            wq = module.weight_quantizer
+            if hasattr(wq, 'alpha'):
+                qnn_alpha_params += 1
+            if hasattr(wq, 'delta'):
+                qnn_delta_params += 1
+        
+        if hasattr(module, 'act_quantizer'):
+            qnn_act_quantizers += 1
+            aq = module.act_quantizer
+            if hasattr(aq, 'delta'):
+                qnn_delta_params += 1
+    
+    print(f"Qnn model contains:")
+    print(f"  - Weight quantizers: {qnn_weight_quantizers}")
+    print(f"  - Activation quantizers: {qnn_act_quantizers}")
+    print(f"  - Alpha parameters: {qnn_alpha_params}")
+    print(f"  - Delta parameters: {qnn_delta_params}")
+    
+    # Show sample checkpoint keys
+    print(f"\nSample checkpoint keys:")
+    alpha_keys = [k for k in checkpoint_dict.keys() if 'weight_quantizer.alpha' in k][:5]
+    delta_keys = [k for k in checkpoint_dict.keys() if 'weight_quantizer.delta' in k][:5]
+    act_delta_keys = [k for k in checkpoint_dict.keys() if 'act_quantizer.delta' in k][:5]
+    
+    for key in alpha_keys:
+        print(f"  {key}")
+    for key in delta_keys:
+        print(f"  {key}")
+    for key in act_delta_keys:
+        print(f"  {key}")
+
+# Generate summary
+summarize_quantizer_params(checkpoint_state_dict, qnn)
+
+
+print("\n=== Fine-tuning final affine layer (gamma, beta) ===")
+from torch.optim import Adam
+
+# Forward once to get output shapes
+with torch.no_grad():
+    sample_output = qnn(cali_data.to(device))
+C = sample_output.shape[1]  # num channels (assuming [B, C] or [B, C, H, W])
+gamma = nn.Parameter(torch.ones(1, C).to(device))
+beta = nn.Parameter(torch.zeros(1, C).to(device))
+lr=1e-2
+# Optimizer
+optimizer = Adam([gamma, beta], lr=lr)
+loss_fn = nn.MSELoss()  # Or KLDivLoss with softmax if more suitable
+loss_ce=nn.CrossEntropyLoss()
+qnn.eval()
+loss_list=[]
+fp_model.eval()
+for epoch in range(400):  # You can tune this
+    optimizer.zero_grad()
+
+    with torch.no_grad():
+        q_output = qnn(cali_data.to(device))  # quantized output
+        #target=cali_target.to(device)
+        #mean = q_output.mean(0)
+        #std = q_output.std(0) + 1e-6
+        #norm_output = (q_output - mean) / std
+        fp_output = fp_model(cali_data.to(device))     # full-precision output
+
+# Assume shape [B, C]; reshape gamma and beta if needed
+    mean_x=q_output.mean()
+    #mean_y=output_fp.mean(dim=0)
+    std_x=q_output.std() + 1e-6
+    #output_aligned=(q_output-mean_x+beta)/(gamma*torch.sqrt(std_x))
+
+    output_aligned = gamma * q_output + beta
+    loss = loss_fn(output_aligned, fp_output)#+loss_ce(output_aligned,target)
+
+    loss.backward()
+    loss_list.append(loss.item())
+    optimizer.step()
+
+    if epoch % 20 == 0 or epoch == 199:
+        print(f"[Epoch {epoch}] Loss: {loss.item():.6f}")
+
+print("=> Finished affine fine-tuning")
+
+plt.figure(figsize=(8, 5))
+plt.plot(loss_list)
+plt.title("Loss Curve (Post-Training Optimization)")
+plt.xlabel("Iteration")
+plt.ylabel("Loss")
+plt.grid(True)
+plt.tight_layout()
+
+# Save the plot with a descriptive name
+plt.savefig("loss_plateau_gamma_beta_optimization_{lr}_new_method.png".format(lr=lr), dpi=300)
+print('Full quantization (W{}A{}) accuracy: {}'.format(args.n_bits_w, args.n_bits_a,
+                                                        validate_model(test_loader, qnn,fp_model=fp_model,gamma=gamma,beta=beta)))

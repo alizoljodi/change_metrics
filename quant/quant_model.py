@@ -37,9 +37,17 @@ class QuantModel(nn.Module):
         else:
             self.model = model
             self.quant_module_refactor_wo_fuse(self.model, weight_quant_params, act_quant_params)
+<<<<<<< HEAD
         
         # Add IRM layer - will be initialized after first forward pass
         self.irm_layer = None
+=======
+        # Add IRM (Information Rectification Module)
+        self.gamma = nn.Parameter(torch.ones(1000))
+        self.beta = nn.Parameter(torch.zeros(1000))
+        #self.gamma1 = nn.Parameter(torch.ones(1000))
+        #self.beta1 = nn.Parameter(torch.zeros(1000))
+>>>>>>> b6fee08384f2622b12d311adf7d5746550a5c4fe
 
     def quant_module_refactor(self, module: nn.Module, weight_quant_params: dict = {}, act_quant_params: dict = {}):
         """
@@ -110,6 +118,7 @@ class QuantModel(nn.Module):
                 m.set_quant_state(weight_quant, act_quant)
 
     def forward(self, input):
+<<<<<<< HEAD
         output = self.model(input)
         
         # Initialize IRM layer if not already done
@@ -136,6 +145,11 @@ class QuantModel(nn.Module):
         else:
             output = self.irm_layer(output)
         
+=======
+        output=self.model(input)
+        output = self.gamma * output + self.beta
+        #output = self.gamma1 * output + self.beta1
+>>>>>>> b6fee08384f2622b12d311adf7d5746550a5c4fe
         return output
 
     def set_first_last_layer_to_8bit(self):
