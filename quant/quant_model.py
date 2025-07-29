@@ -1,8 +1,27 @@
 import torch.nn as nn
+import torch
 from .quant_block import specials, BaseQuantBlock
 from .quant_layer import QuantModule, StraightThrough, UniformAffineQuantizer
 from .fold_bn import search_fold_and_remove_bn
-import torch
+
+
+class IRMLayer(nn.Module):
+    """
+    Individual Response Modulation (IRM) layer
+    """
+    def __init__(self, input_dim):
+        super().__init__()
+        self.input_dim = input_dim
+        # Learnable parameters for transformation
+        self.alpha = nn.Parameter(torch.ones(1, input_dim))
+        self.beta = nn.Parameter(torch.zeros(1, input_dim))
+        
+    def forward(self, x):
+        # Apply individual response modulation
+        # x shape: (batch_size, input_dim)
+        transformed = self.alpha * x + self.beta
+        return transformed
+
 
 class QuantModel(nn.Module):
 
@@ -18,9 +37,9 @@ class QuantModel(nn.Module):
         else:
             self.model = model
             self.quant_module_refactor_wo_fuse(self.model, weight_quant_params, act_quant_params)
-        # Add IRM (Information Rectification Module)
-        self.gamma = nn.Parameter(torch.ones(1000))
-        self.beta = nn.Parameter(torch.zeros(1000))
+        
+        # Add IRM layer - will be initialized after first forward pass
+        self.irm_layer = None
 
     def quant_module_refactor(self, module: nn.Module, weight_quant_params: dict = {}, act_quant_params: dict = {}):
         """
@@ -91,8 +110,32 @@ class QuantModel(nn.Module):
                 m.set_quant_state(weight_quant, act_quant)
 
     def forward(self, input):
-        output=self.model(input)
-        output = self.gamma * output + self.beta
+        output = self.model(input)
+        
+        # Initialize IRM layer if not already done
+        if self.irm_layer is None:
+            # Get the output dimension from the first forward pass
+            if output.dim() > 2:
+                # For convolutional outputs, flatten to (batch_size, features)
+                batch_size = output.size(0)
+                output_flat = output.view(batch_size, -1)
+                input_dim = output_flat.size(1)
+            else:
+                input_dim = output.size(1)
+            
+            self.irm_layer = IRMLayer(input_dim).to(output.device)
+        
+        # Apply IRM transformation
+        if output.dim() > 2:
+            # For convolutional outputs, flatten, apply IRM, then reshape back
+            batch_size = output.size(0)
+            original_shape = output.shape
+            output_flat = output.view(batch_size, -1)
+            transformed_flat = self.irm_layer(output_flat)
+            output = transformed_flat.view(original_shape)
+        else:
+            output = self.irm_layer(output)
+        
         return output
 
     def set_first_last_layer_to_8bit(self):
